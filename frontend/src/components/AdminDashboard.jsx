@@ -8,6 +8,8 @@ const AdminDashboard = () => {
   const [todaySummary, setTodaySummary] = useState({ total_present: 0, records: [] });
   const [usersList, setUsersList] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [selectedUserId, setSelectedUserId] = useState('');
+  const [adminActionMessage, setAdminActionMessage] = useState(null);
 
   useEffect(() => {
     fetchData();
@@ -16,6 +18,7 @@ const AdminDashboard = () => {
   const fetchData = async () => {
     try {
       setLoading(true);
+      console.log('Fetching Admin Dashboard data...');
       const [qrRes, summaryRes, usersRes] = await Promise.all([
         fetch('/api/qr/status', { headers: { Authorization: `Bearer ${token}` } }),
         fetch('/api/attendance/today', { headers: { Authorization: `Bearer ${token}` } }),
@@ -23,21 +26,24 @@ const AdminDashboard = () => {
       ]);
       
       const qrData = await qrRes.json();
+      console.log('QR Status Data:', qrData);
       if (qrData.success) {
         setQrStatus(qrData.qr);
       }
 
       const summaryData = await summaryRes.json();
+      console.log('Summary Data:', summaryData);
       if (summaryData.success) {
         setTodaySummary(summaryData);
       }
       
       const usersData = await usersRes.json();
+      console.log('Users Data:', usersData);
       if (usersData.success) {
         setUsersList(usersData.users);
       }
     } catch (err) {
-      console.error(err);
+      console.error('Fetch error:', err);
     } finally {
       setLoading(false);
     }
@@ -56,10 +62,38 @@ const AdminDashboard = () => {
       const data = await res.json();
       if (data.success) {
         // Optimistic UI update
-        setUsersList(usersList.map(u => u.id === userId ? { ...u, can_scan: !currentStatus ? 1 : 0 } : u));
+        setUsersList(usersList.map(u => u.id === userId ? { ...u, can_scan: !currentStatus } : u));
       }
     } catch (err) {
       console.error(err);
+    }
+  };
+
+  const handleManualMark = async (action) => {
+    if (!selectedUserId) {
+      setAdminActionMessage({ success: false, message: 'Please select a student first.' });
+      return;
+    }
+    
+    setAdminActionMessage(null);
+    try {
+      const res = await fetch('/api/attendance/mark-manual', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}` 
+        },
+        body: JSON.stringify({ userId: selectedUserId, action })
+      });
+      const data = await res.json();
+      setAdminActionMessage({ success: data.success, message: data.message });
+      if (data.success) {
+        setSelectedUserId('');
+        fetchData(); // Refresh summary and user list
+      }
+    } catch (err) {
+      console.error(err);
+      setAdminActionMessage({ success: false, message: 'Network error' });
     }
   };
 
@@ -145,6 +179,49 @@ const AdminDashboard = () => {
             <p className="subtitle" style={{ textAlign: 'center', padding: '24px' }}>No attendance records yet.</p>
           )}
         </div>
+
+        <div className="card">
+          <h2 className="title" style={{ marginBottom: '16px', fontSize: '1.2rem' }}>Manual Attendance (by Name)</h2>
+          {adminActionMessage && (
+            <div className={`alert ${adminActionMessage.success ? 'alert-success' : 'alert-error'}`} style={{ marginBottom: '16px' }}>
+              <p style={{ margin: 0 }}>{adminActionMessage.message}</p>
+            </div>
+          )}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <select 
+              className="form-control" 
+              value={selectedUserId}
+              onChange={(e) => setSelectedUserId(e.target.value)}
+              style={{ marginBottom: 0 }}
+            >
+              <option value="">-- Select Student --</option>
+              {usersList.filter(u => u.role === 'user').map(user => (
+                <option key={user.id} value={user.id}>
+                  {user.name} ({user.email})
+                </option>
+              ))}
+            </select>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button 
+                className="btn btn-primary" 
+                style={{ flex: 1 }} 
+                onClick={() => handleManualMark('check_in')}
+              >
+                Check In
+              </button>
+              <button 
+                className="btn btn-secondary" 
+                style={{ flex: 1 }} 
+                onClick={() => handleManualMark('check_out')}
+              >
+                Check Out
+              </button>
+            </div>
+          </div>
+          <p className="subtitle" style={{ fontSize: '0.85rem', marginTop: '12px' }}>
+            Select a student from the registered list to manually record their check-in or check-out.
+          </p>
+        </div>
       </div>
 
       <div className="card" style={{ marginTop: '24px' }}>
@@ -161,18 +238,18 @@ const AdminDashboard = () => {
                   <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '12px' }}>{user.email}</div>
                   
                   <button 
-                    onClick={() => toggleUserPermission(user.id, user.can_scan === 1)}
+                    onClick={() => toggleUserPermission(user.id, !!user.can_scan)}
                     style={{
                       padding: '6px 12px',
                       borderRadius: '4px',
                       fontSize: '0.85rem',
                       fontWeight: 600,
-                      backgroundColor: user.can_scan === 1 ? 'rgba(244, 67, 54, 0.1)' : 'rgba(76, 175, 80, 0.1)',
-                      color: user.can_scan === 1 ? 'var(--danger)' : 'var(--success)',
-                      border: `1px solid ${user.can_scan === 1 ? 'var(--danger)' : 'var(--success)'}`
+                      backgroundColor: !!user.can_scan ? 'rgba(244, 67, 54, 0.1)' : 'rgba(76, 175, 80, 0.1)',
+                      color: !!user.can_scan ? 'var(--danger)' : 'var(--success)',
+                      border: `1px solid ${!!user.can_scan ? 'var(--danger)' : 'var(--success)'}`
                     }}
                   >
-                    {user.can_scan === 1 ? 'Revoke Access' : 'Grant Access'}
+                    {!!user.can_scan ? 'Revoke Access' : 'Grant Access'}
                   </button>
                 </div>
               </li>

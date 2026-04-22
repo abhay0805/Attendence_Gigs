@@ -3,6 +3,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const connectDB = require('./src/database/db');
 
 const app = express();
 
@@ -34,10 +35,22 @@ app.use((err, _req, res, _next) => {
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`\n🚀  Attendance API running → http://localhost:${PORT}`);
-  console.log(`📋  Health check         → http://localhost:${PORT}/health\n`);
-});
+const start = async () => {
+  try {
+    // Wait for DB connection before starting the server
+    await connectDB();
+    
+    const PORT = process.env.PORT || 3000;
+    app.listen(PORT, () => {
+      console.log(`\n🚀  Attendance API running → http://localhost:${PORT}`);
+      console.log(`📋  Health check         → http://localhost:${PORT}/health\n`);
+    });
+  } catch (err) {
+    console.error('Failed to start server:', err);
+    process.exit(1);
+  }
+};
+
+start();
 
 module.exports = app;

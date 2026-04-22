@@ -1,7 +1,5 @@
-// src/controllers/qrController.js
 // Admin endpoints for managing the static QR token
 
-const db = require('../database/schema');
 const { isCurrentlyActiveIST, STATIC_QR_TOKEN } = require('../utils/time');
 
 /**

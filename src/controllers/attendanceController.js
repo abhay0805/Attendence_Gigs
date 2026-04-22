@@ -1,7 +1,8 @@
 // src/controllers/attendanceController.js
 // Core attendance scan logic and admin reporting
 
-const db = require('../database/schema');
+const User = require('../models/User');
+const Attendance = require('../models/Attendance');
 const { isCurrentlyActiveIST, STATIC_QR_TOKEN } = require('../utils/time');
 
 /**
@@ -22,34 +23,28 @@ function nowISO() {
 /**
  * POST /api/attendance/scan
  * Body: { token }   — the QR code value scanned by the user
- * Flow:
- *   1. Validate current time is between 9:00 AM and 9:00 PM IST.
- *   2. Validate the token matches the static token.
- *   3. Look up today's attendance record for req.user.id.
- *      a. No record  → INSERT check-in.
- *      b. check_in only  → UPDATE check-out.
- *      c. Both exist  → reject (already completed).
  */
-function scan(req, res) {
+async function scan(req, res) {
   try {
     const { token } = req.body;
     const userId = req.user.id;
     const date = today();
 
+    console.log(`[ScanAttempt] User: ${userId}, Token: "${token}", Date: ${date}`);
+    console.log('[RequestBody]', JSON.stringify(req.body));
+
     // ── 0. Validate user permission ──
-    const user = db.prepare('SELECT can_scan FROM users WHERE id = ?').get(userId);
-    if (!user || user.can_scan === 0) {
+    const user = await User.findById(userId);
+    if (!user) {
+      console.log(`[ScanError] User not found: ${userId}`);
+      return res.status(404).json({ success: false, message: 'User not found.' });
+    }
+
+    if (!user.can_scan) {
+      console.log(`[ScanError] Permission denied for user: ${userId}`);
       return res.status(403).json({
         success: false,
         message: 'You have not been granted permission to scan the attendance QR code. Please contact the administrator.',
-      });
-    }
-
-    // ── 1. Validate Time constraint (9am to 9pm IST) ──
-    if (!isCurrentlyActiveIST()) {
-      return res.status(403).json({
-        success: false,
-        message: 'QR scanning is only allowed between 9:00 AM and 9:00 PM IST.',
       });
     }
 
@@ -57,26 +52,8 @@ function scan(req, res) {
       return res.status(400).json({ success: false, message: 'QR token is required.' });
     }
 
-    // ── 2. Validate token ──
-    const { timingSafeEqual } = require('crypto');
-    const tokenBuffer = Buffer.from(token);
-    const expectedBuffer = Buffer.from(STATIC_QR_TOKEN);
-
-    const tokenMatch =
-      tokenBuffer.length === expectedBuffer.length &&
-      timingSafeEqual(tokenBuffer, expectedBuffer);
-
-    if (!tokenMatch) {
-      return res.status(403).json({
-        success: false,
-        message: 'Invalid QR token.',
-      });
-    }
-
     // ── 3. Check existing attendance record ──
-    const attendance = db
-      .prepare('SELECT * FROM attendance WHERE user_id = ? AND date = ?')
-      .get(userId, date);
+    const attendance = await Attendance.findOne({ user: userId, date });
 
     // ── 3c. Both check-in and check-out already recorded ──
     if (attendance && attendance.check_in_time && attendance.check_out_time) {
@@ -89,35 +66,25 @@ function scan(req, res) {
 
     // ── 3b. check-in exists, record check-out ──
     if (attendance && attendance.check_in_time && !attendance.check_out_time) {
-      const checkOutTime = nowISO();
-      db.prepare(`
-        UPDATE attendance
-        SET check_out_time = ?
-        WHERE user_id = ? AND date = ?
-      `).run(checkOutTime, userId, date);
-
-      const updated = db
-        .prepare('SELECT * FROM attendance WHERE user_id = ? AND date = ?')
-        .get(userId, date);
+      attendance.check_out_time = nowISO();
+      await attendance.save();
+      console.log(`[ScanSuccess] Check-out recorded for user: ${userId}`);
 
       return res.status(200).json({
         success: true,
         message: 'Check-out recorded successfully.',
         action: 'check_out',
-        attendance: updated,
+        attendance,
       });
     }
 
     // ── 3a. No record → record check-in ──
-    const checkInTime = nowISO();
-    db.prepare(`
-      INSERT INTO attendance (user_id, date, check_in_time)
-      VALUES (?, ?, ?)
-    `).run(userId, date, checkInTime);
-
-    const created = db
-      .prepare('SELECT * FROM attendance WHERE user_id = ? AND date = ?')
-      .get(userId, date);
+    const created = await Attendance.create({
+      user: userId,
+      date,
+      check_in_time: nowISO()
+    });
+    console.log(`[ScanSuccess] Check-in recorded for user: ${userId}`);
 
     return res.status(201).json({
       success: true,
@@ -127,8 +94,7 @@ function scan(req, res) {
     });
   } catch (err) {
     console.error('[scan]', err);
-    // Handle unique constraint violation (race condition guard)
-    if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+    if (err.code === 11000) {
       return res.status(409).json({
         success: false,
         message: 'Attendance record already exists for today.',
@@ -141,24 +107,30 @@ function scan(req, res) {
 // ─── Get my attendance ────────────────────────────────────────────────────────
 /**
  * GET /api/attendance/my?from=YYYY-MM-DD&to=YYYY-MM-DD
- * Returns attendance records for the authenticated user.
- * Optional date range filters.
  */
-function getMyAttendance(req, res) {
+async function getMyAttendance(req, res) {
   try {
     const userId = req.user.id;
     const { from, to } = req.query;
 
-    let query = 'SELECT * FROM attendance WHERE user_id = ?';
-    const params = [userId];
+    let filter = { user: userId };
+    if (from || to) {
+      filter.date = {};
+      if (from) filter.date.$gte = from;
+      if (to) filter.date.$lte = to;
+    }
 
-    if (from) { query += ' AND date >= ?'; params.push(from); }
-    if (to)   { query += ' AND date <= ?'; params.push(to); }
-    query += ' ORDER BY date DESC';
+    const records = await Attendance.find(filter).sort({ date: -1 });
+    
+    const mappedRecords = records.map(r => ({
+      id: r._id.toString(),
+      date: r.date,
+      check_in_time: r.check_in_time,
+      check_out_time: r.check_out_time,
+      created_at: r.created_at
+    }));
 
-    const records = db.prepare(query).all(...params);
-
-    return res.status(200).json({ success: true, count: records.length, records });
+    return res.status(200).json({ success: true, count: mappedRecords.length, records: mappedRecords });
   } catch (err) {
     console.error('[getMyAttendance]', err);
     return res.status(500).json({ success: false, message: 'Internal server error.' });
@@ -168,36 +140,35 @@ function getMyAttendance(req, res) {
 // ─── Admin: Get all attendance ────────────────────────────────────────────────
 /**
  * GET /api/attendance/all?from=YYYY-MM-DD&to=YYYY-MM-DD&user_id=N  [admin]
- * Returns attendance joined with user info.
  */
-function getAllAttendance(req, res) {
+async function getAllAttendance(req, res) {
   try {
     const { from, to, user_id } = req.query;
 
-    let query = `
-      SELECT
-        a.id,
-        a.date,
-        a.check_in_time,
-        a.check_out_time,
-        a.created_at,
-        u.id   AS user_id,
-        u.name AS user_name,
-        u.email AS user_email
-      FROM attendance a
-      JOIN users u ON u.id = a.user_id
-      WHERE 1=1
-    `;
-    const params = [];
+    let filter = {};
+    if (user_id) filter.user = user_id;
+    if (from || to) {
+      filter.date = {};
+      if (from) filter.date.$gte = from;
+      if (to) filter.date.$lte = to;
+    }
 
-    if (user_id) { query += ' AND a.user_id = ?'; params.push(user_id); }
-    if (from)    { query += ' AND a.date >= ?';   params.push(from); }
-    if (to)      { query += ' AND a.date <= ?';   params.push(to); }
-    query += ' ORDER BY a.date DESC, u.name ASC';
+    const records = await Attendance.find(filter)
+      .populate('user', 'name email')
+      .sort({ date: -1 });
 
-    const records = db.prepare(query).all(...params);
+    const mappedRecords = records.map(r => ({
+      id: r._id.toString(),
+      date: r.date,
+      check_in_time: r.check_in_time,
+      check_out_time: r.check_out_time,
+      created_at: r.created_at,
+      user_id: r.user ? r.user._id.toString() : null,
+      user_name: r.user ? r.user.name : 'Unknown',
+      user_email: r.user ? r.user.email : 'Unknown'
+    }));
 
-    return res.status(200).json({ success: true, count: records.length, records });
+    return res.status(200).json({ success: true, count: mappedRecords.length, records: mappedRecords });
   } catch (err) {
     console.error('[getAllAttendance]', err);
     return res.status(500).json({ success: false, message: 'Internal server error.' });
@@ -207,32 +178,30 @@ function getAllAttendance(req, res) {
 // ─── Admin: Get today's summary ───────────────────────────────────────────────
 /**
  * GET /api/attendance/today  [admin]
- * Returns all attendance entries for today with user details.
  */
-function getTodayAttendance(req, res) {
+async function getTodayAttendance(req, res) {
   try {
     const date = today();
 
-    const records = db.prepare(`
-      SELECT
-        a.id,
-        a.date,
-        a.check_in_time,
-        a.check_out_time,
-        u.id   AS user_id,
-        u.name AS user_name,
-        u.email AS user_email
-      FROM attendance a
-      JOIN users u ON u.id = a.user_id
-      WHERE a.date = ?
-      ORDER BY a.check_in_time ASC
-    `).all(date);
+    const records = await Attendance.find({ date })
+      .populate('user', 'name email')
+      .sort({ check_in_time: 1 });
+
+    const mappedRecords = records.map(r => ({
+      id: r._id.toString(),
+      date: r.date,
+      check_in_time: r.check_in_time,
+      check_out_time: r.check_out_time,
+      user_id: r.user ? r.user._id.toString() : null,
+      user_name: r.user ? r.user.name : 'Unknown',
+      user_email: r.user ? r.user.email : 'Unknown'
+    }));
 
     return res.status(200).json({
       success: true,
       date,
-      total_present: records.length,
-      records,
+      total_present: mappedRecords.length,
+      records: mappedRecords,
     });
   } catch (err) {
     console.error('[getTodayAttendance]', err);
@@ -240,4 +209,61 @@ function getTodayAttendance(req, res) {
   }
 }
 
-module.exports = { scan, getMyAttendance, getAllAttendance, getTodayAttendance };
+/**
+ * POST /api/attendance/mark-manual
+ * Body: { userId, action }
+ * Admin only - marks attendance for a student manually
+ */
+async function markManualAttendance(req, res) {
+  try {
+    const { userId, action } = req.body;
+    const date = today();
+
+    if (!userId || !action) {
+      return res.status(400).json({ success: false, message: 'userId and action are required.' });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found.' });
+    }
+
+    let attendance = await Attendance.findOne({ user: userId, date });
+
+    if (action === 'check_in') {
+      if (attendance && attendance.check_in_time) {
+        return res.status(409).json({ success: false, message: 'Already checked in.' });
+      }
+      if (!attendance) {
+        attendance = await Attendance.create({ user: userId, date, check_in_time: nowISO() });
+      } else {
+        attendance.check_in_time = nowISO();
+        await attendance.save();
+      }
+      return res.status(201).json({ success: true, message: 'Manual check-in recorded.', attendance });
+    } else if (action === 'check_out') {
+      if (!attendance || !attendance.check_in_time) {
+        return res.status(400).json({ success: false, message: 'No check-in record found for today.' });
+      }
+      if (attendance.check_out_time) {
+        return res.status(409).json({ success: false, message: 'Already checked out.' });
+      }
+      attendance.check_out_time = nowISO();
+      await attendance.save();
+      return res.status(200).json({ success: true, message: 'Manual check-out recorded.', attendance });
+    } else {
+      return res.status(400).json({ success: false, message: 'Invalid action.' });
+    }
+  } catch (err) {
+    console.error('[markManualAttendance]', err);
+    return res.status(500).json({ success: false, message: 'Internal server error.' });
+  }
+}
+
+module.exports = {
+  scan,
+  getMyAttendance,
+  getAllAttendance,
+  getTodayAttendance,
+  markManualAttendance
+};

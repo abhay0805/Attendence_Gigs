@@ -33,6 +33,7 @@ const UserDashboard = () => {
   const todayRecord = records.find(r => r.date === new Date().toISOString().slice(0, 10));
 
   const handleScanSuccess = async (qrData) => {
+    console.log('Scanned QR Data:', qrData);
     try {
       const res = await fetch('/api/attendance/scan', {
         method: 'POST',
@@ -43,6 +44,7 @@ const UserDashboard = () => {
         body: JSON.stringify({ token: qrData })
       });
       const data = await res.json();
+      console.log('Scan API Response:', data);
       
       setScanResult({
         success: data.success,
@@ -54,6 +56,7 @@ const UserDashboard = () => {
         setTimeout(() => setShowScanner(false), 2000);
       }
     } catch (err) {
+      console.error('Scan error:', err);
       setScanResult({ success: false, message: 'Network error. Please try again.' });
     }
   };
@@ -82,12 +85,21 @@ const UserDashboard = () => {
           <h2 className="title" style={{ fontSize: '1.2rem', marginBottom: '16px' }}>Scan Daily QR Code</h2>
           {scanResult && (
             <div className={`alert ${scanResult.success ? 'alert-success' : 'alert-error'}`}>
-              <CheckCircle size={20} />
+              {scanResult.success ? <CheckCircle size={20} /> : <Camera size={20} />}
               <p style={{ margin: 0 }}>{scanResult.message}</p>
             </div>
           )}
-          {!scanResult?.success && (
+          {!scanResult && (
             <QRScanner onScanSuccess={handleScanSuccess} />
+          )}
+          {scanResult && !scanResult.success && (
+            <button 
+              className="btn btn-primary" 
+              style={{ marginTop: '16px' }}
+              onClick={() => setScanResult(null)}
+            >
+              Try Again
+            </button>
           )}
         </div>
       )}

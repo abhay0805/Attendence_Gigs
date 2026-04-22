@@ -1,5 +1,5 @@
-import React, { useState, useContext } from 'react';
-import { useNavigate, Navigate } from 'react-router-dom';
+import React, { useState, useContext, useEffect } from 'react';
+import { useNavigate, Navigate, Link, useLocation } from 'react-router-dom';
 import { AuthContext } from '../context/AuthContext';
 import { LogIn } from 'lucide-react';
 
@@ -7,10 +7,20 @@ const Login = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(false);
   
   const { login, user } = useContext(AuthContext);
   const navigate = useNavigate();
+  const location = useLocation();
+
+  useEffect(() => {
+    if (location.state?.message) {
+      setSuccess(location.state.message);
+      // Clear state after reading it
+      window.history.replaceState({}, document.title);
+    }
+  }, [location]);
 
   if (user) {
     return <Navigate to="/" replace />;
@@ -19,6 +29,7 @@ const Login = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
+    setSuccess('');
     setLoading(true);
 
     try {
@@ -48,6 +59,12 @@ const Login = () => {
         <h1 className="title" style={{ marginBottom: '8px' }}>Welcome Back</h1>
         <p className="subtitle">Sign in to your account</p>
       </div>
+
+      {success && (
+        <div className="alert alert-success">
+          <p>{success}</p>
+        </div>
+      )}
 
       {error && (
         <div className="alert alert-error">
@@ -84,6 +101,12 @@ const Login = () => {
           <LogIn size={20} />
           {loading ? 'Signing in...' : 'Sign In'}
         </button>
+
+        <div style={{ textAlign: 'center', marginTop: '24px' }}>
+          <p className="subtitle" style={{ fontSize: '0.9rem' }}>
+            Don't have an account? <Link to="/register" style={{ color: 'var(--primary)', fontWeight: '600' }}>Register Here</Link>
+          </p>
+        </div>
       </form>
     </div>
   );
