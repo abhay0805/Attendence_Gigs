@@ -8,6 +8,7 @@ const UserDashboard = () => {
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showScanner, setShowScanner] = useState(false);
+  const [processing, setProcessing] = useState(false);
   const [scanResult, setScanResult] = useState(null);
 
   useEffect(() => {
@@ -33,6 +34,9 @@ const UserDashboard = () => {
   const todayRecord = records.find(r => r.date === new Date().toISOString().slice(0, 10));
 
   const handleScanSuccess = async (qrData) => {
+    if (processing || scanResult?.success) return;
+    
+    setProcessing(true);
     console.log('Scanned QR Data:', qrData);
     try {
       const res = await fetch('/api/attendance/scan', {
@@ -53,11 +57,17 @@ const UserDashboard = () => {
 
       if (data.success) {
         fetchRecords();
-        setTimeout(() => setShowScanner(false), 2000);
+        // Hide scanner after a delay to ensure user sees success message
+        setTimeout(() => {
+          setShowScanner(false);
+          setScanResult(null);
+        }, 2500);
       }
     } catch (err) {
       console.error('Scan error:', err);
       setScanResult({ success: false, message: 'Network error. Please try again.' });
+    } finally {
+      setProcessing(false);
     }
   };
 
